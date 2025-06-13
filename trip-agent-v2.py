@@ -40,7 +40,7 @@ CATEGORY_PRICES = {
     "art_gallery": 500
 }
 
-TELEGRAM_TOKEN = "ТОКЕН"
+TELEGRAM_TOKEN = "токен"
 
 # --- Парсинг ---
 def parse_dates(text):
@@ -258,11 +258,6 @@ def generate_daily_plan(date_str, weather, places, daily_budget, used_places):
 
 
 # --- Telegram Bot ---
-async def split_and_send(chat, text, max_length=4000):
-    parts = [text[i:i+max_length] for i in range(0, len(text), max_length)]
-    for part in parts:
-        await chat.send_message(part)
-
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     if text == "🚀 Начать":
@@ -270,6 +265,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Привет! Я AI-помощник для путешествий, помогу спланировать дни отдыха🍀. Введи: Город, даты (например, 15-16 июня), бюджет (число)"
         )
         return
+    # Отправляем сообщение о начале планирования
+    planning_msg = await update.message.reply_text("⏳ Планирую ваш отдых...")
     
     city, start, end, budget = parse_user_input(text)
     
@@ -302,7 +299,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     enriched = ask_mistral(f"Пользователь поедет в {city} с {start.strftime('%d %B')} по {end.strftime('%d %B')} с бюджетом {budget}₽. Придумай 3 популярных идеи для отдыха, связанных с местной культурой/достопримечательностью или природой. Формат: 1) Название... 1-3 предложения; 2) Название... 3) Название.. Только три идеи. Отвечай граммотно на РУССКОМ ЯЗЫКЕ")
     reply += "🌟 Дополнительные рекомендации:\n" + enriched
 
-    await split_and_send(update.message.chat, reply)
+    await planning_msg.edit_text(reply)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [[KeyboardButton("🚀 Начать")]]
