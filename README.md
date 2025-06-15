@@ -97,9 +97,10 @@
 >В платном API от Google maps можно добавить в бота рейтинг мест которые он советует и средний чек ресторанов, кафе и музеев.
 
 > [!IMPORTANT]
-> Погода будет показываться только на 16 дней вперед отсчитывая от дня когда сделан запрос.
+> Погода будет показываться только на 16 дней вперед, отсчитывая от дня когда сделан запрос.
 
 ## Скриншот результата работы
-![image](https://github.com/user-attachments/assets/dbc23916-2d1b-4aa3-94a1-d7391aba5bae)
+![image](https://github.com/user-attachments/assets/0d3fe853-7faa-46e9-b4c4-a9b7449754f3)
+
 ![image](https://github.com/user-attachments/assets/2e532929-23e2-4c32-9de4-7d7fcba6a52c)
 
