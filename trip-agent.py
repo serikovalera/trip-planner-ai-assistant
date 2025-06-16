@@ -16,7 +16,7 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from google.auth.transport.requests import Request
 
-# Константы
+# ---   Константы   ---
 MONTHS = {
     "января": 1, "февраля": 2, "марта": 3, "апреля": 4, "мая": 5, "июня": 6,
     "июля": 7, "августа": 8, "сентября": 9, "октября": 10, "ноября": 11, "декабря": 12
@@ -30,15 +30,15 @@ CATEGORY_TRANSLATIONS = {
     "cafe": "Кафе", "restaurant": "Ресторан", "museum": "Музей",
     "park": "Парк", "art_gallery": "Галерея", "hotel": "Отель"
 }
-TELEGRAM_TOKEN = "токен"
+TELEGRAM_TOKEN = "7699600970:AAGbm13LNlKXG9bQe-q86SkNaJZCMgCrRLI"
 SCOPES = ['https://www.googleapis.com/auth/calendar.events']
 CLIENT_SECRET_FILE = 'google_credentials.json'
 
-# Глобальные переменные
+# ---   Глобальные переменные   ---
 calendar_context = defaultdict(list)
 user_credentials = {}
 
-# Инициализация LLM
+# ---   Инициализация LLM   ---
 llm = Ollama(
     model='mistral:7b-instruct',
     temperature=0.5,
@@ -48,8 +48,7 @@ llm = Ollama(
     num_thread=4
 )
 
-# ========= ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ =========
-
+# ---   Вызов ЛЛМ   ---
 def ask_mistral(prompt):
     try:
         return llm.invoke(prompt).strip()
@@ -57,6 +56,7 @@ def ask_mistral(prompt):
         print(f"LLM error: {e}")
         return ""
 
+# ---   Функции парсинга   ---
 def parse_dates(text):
     text = text.lower().replace("–", "-").replace("—", "-").replace("по", "-").replace("с ", "")
     pattern = re.compile(r"(\d{1,2})\s*([а-я]+)?\s*-\s*(\d{1,2})\s*([а-я]+)?")
@@ -109,6 +109,7 @@ def parse_user_input(text):
             return city, start, end, budget
     return parse_flexible_input_with_llm(text)
 
+# ---   Гео и Полога   ---
 def get_coordinates(city):
     url = "https://nominatim.openstreetmap.org/search"
     params = {"q": city, "format": "json", "limit": 1}
@@ -146,7 +147,12 @@ def get_weather_forecast(city, start_dt, end_dt):
         }
     return weather
 
+# ---   Поиск достопримечательностей   ---
 def get_attractions(city, categories):
+    """
+    Делает Overpass API-запрос к OpenStreetMap по категориям
+    Возвращает места с координатами и названиями
+    """
     category_tags = {
         "museum": "tourism=museum",
         "park": "leisure=park",
@@ -187,6 +193,7 @@ def get_attractions(city, categories):
     unique = {p['name']: p for p in places}
     return list(unique.values())
 
+# ---   Расчет расстояний для оптимизации маршрута   ---
 def haversine(lon1, lat1, lon2, lat2):
     lon1, lat1, lon2, lat2 = map(radians, [lon1, lat1, lon2, lat2])
     dlon = lon2 - lon1
@@ -205,6 +212,7 @@ def sort_by_proximity(places):
         sorted_places.append(places.pop(0))
     return sorted_places
 
+# ---   Планирование дня   ---
 def generate_daily_plan(date_str, weather, places, daily_budget, used_places):
     date = datetime.strptime(date_str, "%Y-%m-%d")
     temp = weather.get("temp", "?")
@@ -251,6 +259,7 @@ def generate_daily_plan(date_str, weather, places, daily_budget, used_places):
         plan += "\n".join(day_plan) + "\n"
     return plan
 
+# ---   Взаимодействие с Google Calendar   ---
 def get_google_calendar_service(user_id):
     creds = None
     if user_id in user_credentials:
@@ -289,6 +298,7 @@ async def add_event_to_google_calendar(user_id, title, start_dt, duration_hours=
         print(f"Google Calendar error: {e}")
         return False
 
+# ---   Основной отчет   ---
 async def generate_trip_plan(city, start, end, budget):
     days = (end - start).days + 1
     daily_budget = budget // days
@@ -321,14 +331,14 @@ async def generate_trip_plan(city, start, end, budget):
     
     return reply
 
-# ========= TELEGRAM HANDLERS =========
-
+# ---   Обработка команды /start   ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Добро пожаловать! Нажмите '🚀 Начать' для планирования поездки.",
         reply_markup=ReplyKeyboardMarkup([[KeyboardButton("🚀 Начать")]], resize_keyboard=True)
     )
 
+# ---   Основной обработчик   ---
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     text = update.message.text
@@ -383,6 +393,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await planning_msg.edit_text(f"⚠️ Произошла ошибка: {str(e)}")
 
+# ---   Запуск бота   ---
 def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
