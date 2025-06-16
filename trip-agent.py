@@ -2,6 +2,7 @@ import re
 import json
 import random
 import requests
+import asyncio
 from datetime import datetime, timedelta
 from math import radians, cos, sin, asin, sqrt
 from collections import defaultdict
@@ -10,13 +11,34 @@ from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 from langchain_community.llms import Ollama
-
-# Google Calendar API
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
+from google.auth.transport.requests import Request
 
-# === Настройка LLM через LangChain ===
+# Константы
+MONTHS = {
+    "января": 1, "февраля": 2, "марта": 3, "апреля": 4, "мая": 5, "июня": 6,
+    "июля": 7, "августа": 8, "сентября": 9, "октября": 10, "ноября": 11, "декабря": 12
+}
+MONTH_NAMES = list(MONTHS.keys())
+CATEGORY_PRICES = {
+    "cafe": 700, "restaurant": 2000, "museum": 500, 
+    "park": 0, "art_gallery": 500, "hotel": 3000
+}
+CATEGORY_TRANSLATIONS = {
+    "cafe": "Кафе", "restaurant": "Ресторан", "museum": "Музей",
+    "park": "Парк", "art_gallery": "Галерея", "hotel": "Отель"
+}
+TELEGRAM_TOKEN = "токен"
+SCOPES = ['https://www.googleapis.com/auth/calendar.events']
+CLIENT_SECRET_FILE = 'google_credentials.json'
+
+# Глобальные переменные
+calendar_context = defaultdict(list)
+user_credentials = {}
+
+# Инициализация LLM
 llm = Ollama(
     model='mistral:7b-instruct',
     temperature=0.5,
@@ -26,42 +48,7 @@ llm = Ollama(
     num_thread=4
 )
 
-# === Контекст для MCP (Model Context Control) ===
-calendar_context = defaultdict(list)
-
-# === Google Calendar API Setup ===
-SCOPES = ['https://www.googleapis.com/auth/calendar.events']
-calendar_service = None
-
-def init_google_calendar():
-    global calendar_service
-    flow = InstalledAppFlow.from_client_secrets_file("google_credentials.json", SCOPES)
-    creds = flow.run_local_server(port=0)
-    calendar_service = build('calendar', 'v3', credentials=creds)
-
-def add_event_to_google_calendar(title, start_dt, duration_hours=1):
-    end_dt = start_dt + timedelta(hours=duration_hours)
-    event = {
-        'summary': title,
-        'start': {'dateTime': start_dt.isoformat(), 'timeZone': 'Europe/Moscow'},
-        'end': {'dateTime': end_dt.isoformat(), 'timeZone': 'Europe/Moscow'},
-    }
-    calendar_service.events().insert(calendarId='primary', body=event).execute()
-
-# === Вспомогательные данные и функции ===
-MONTHS = {
-    "января": 1, "февраля": 2, "марта": 3, "апреля": 4, "мая": 5, "июня": 6,
-    "июля": 7, "августа": 8, "сентября": 9, "октября": 10, "ноября": 11, "декабря": 12
-}
-MONTH_NAMES = list(MONTHS.keys())
-CATEGORY_PRICES = {
-    "cafe": 700,
-    "restaurant": 2000,
-    "museum": 500,
-    "park": 0,
-    "art_gallery": 500
-}
-TELEGRAM_TOKEN = "7699600970:AAGbm13LNlKXG9bQe-q86SkNaJZCMgCrRLI"
+# ========= ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ =========
 
 def ask_mistral(prompt):
     try:
@@ -174,14 +161,14 @@ def get_attractions(city, categories):
         if not tag:
             continue
         query = f"""
-            [out:json];
-            area["name"="{city}"]->.searchArea;
-            (
-            node[{tag}](area.searchArea);
-            way[{tag}](area.searchArea);
-            relation[{tag}](area.searchArea);
-            );
-            out center 50;
+        [out:json];
+        area["name"="{city}"]->.searchArea;
+        (
+        node[{tag}](area.searchArea);
+        way[{tag}](area.searchArea);
+        relation[{tag}](area.searchArea);
+        );
+        out center 50;
         """
         resp = requests.post("https://overpass-api.de/api/interpreter", data={'data': query})
         try:
@@ -251,15 +238,11 @@ def generate_daily_plan(date_str, weather, places, daily_budget, used_places):
             if p['type'] in types and p['name'] not in used_places:
                 cost = p['price']
                 if used_budget + cost <= daily_budget:
-                    event_desc = f"{part}: {p['name']} ({p['type'].capitalize()}, ~{cost}₽)"
+                    event_desc = f"{part}: {p['name']} ({CATEGORY_TRANSLATIONS[p['type']]}, ~{cost}₽)"
                     day_plan.append(f"  {event_desc}")
                     used_places.add(p['name'])
                     used_budget += cost
-
-                    # 🧠 MCP: сохраняем + добавляем в Google Calendar
                     calendar_context[date_str].append(event_desc)
-                    event_time = date + timedelta(hours=9 + i * 2)
-                    add_event_to_google_calendar(event_desc, event_time)
                     break
 
     if not day_plan:
@@ -268,35 +251,58 @@ def generate_daily_plan(date_str, weather, places, daily_budget, used_places):
         plan += "\n".join(day_plan) + "\n"
     return plan
 
-# === Telegram handlers ===
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
-    if text == "🚀 Начать":
-        await update.message.reply_text(
-            "Привет! Введи: Город, даты (например, 15-16 июня), бюджет (число)"
-        )
-        return
+def get_google_calendar_service(user_id):
+    creds = None
+    if user_id in user_credentials:
+        creds = Credentials.from_authorized_user_info(user_credentials[user_id], SCOPES)
+    
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        else:
+            flow = InstalledAppFlow.from_client_secrets_file(CLIENT_SECRET_FILE, SCOPES)
+            creds = flow.run_local_server(port=0)
+        
+        user_credentials[user_id] = {
+            'token': creds.token,
+            'refresh_token': creds.refresh_token,
+            'token_uri': creds.token_uri,
+            'client_id': creds.client_id,
+            'client_secret': creds.client_secret,
+            'scopes': creds.scopes
+        }
+    
+    return build('calendar', 'v3', credentials=creds)
 
-    if text == "📅 Сохранить в календарь":
-        # Здесь вставляем код добавления в Google Calendar
-        await update.message.reply_text("📅 Поездка добавлена в ваш Google Календарь!")
-        return  
+async def add_event_to_google_calendar(user_id, title, start_dt, duration_hours=1):
+    try:
+        service = get_google_calendar_service(user_id)
+        end_dt = start_dt + timedelta(hours=duration_hours)
+        event = {
+            'summary': title,
+            'start': {'dateTime': start_dt.isoformat(), 'timeZone': 'Europe/Moscow'},
+            'end': {'dateTime': end_dt.isoformat(), 'timeZone': 'Europe/Moscow'},
+        }
+        service.events().insert(calendarId='primary', body=event).execute()
+        return True
+    except Exception as e:
+        print(f"Google Calendar error: {e}")
+        return False
 
-    planning_msg = await update.message.reply_text("⏳ Планирую ваш отдых...")
-
-    city, start, end, budget = parse_user_input(text)
-    if not all([city, start, end, budget]):
-        await update.message.reply_text("Не удалось распознать параметры поездки. Пример:\nМосква, 15-16 июня, 5000")
-        return
-
+async def generate_trip_plan(city, start, end, budget):
     days = (end - start).days + 1
     daily_budget = budget // days
-    weather = get_weather_forecast(city, start, end)
-    places = get_attractions(city, list(CATEGORY_PRICES.keys()) + ["hotel"])
+    
+    weather, places = await asyncio.gather(
+        asyncio.to_thread(get_weather_forecast, city, start, end),
+        asyncio.to_thread(get_attractions, city, list(CATEGORY_PRICES.keys()) + ["hotel"])
+    )
+    
     hotels = [p for p in places if p['type'] == "hotel" and p['price'] * days <= budget]
 
-    reply = f"🛫 План путешествия в {city} с {start.strftime('%d %B')} по {end.strftime('%d %B')}\n"
+    reply = f"🛫 План путешествия в {city} с {start.strftime('%d ')}{MONTH_NAMES[start.month-1]} по {end.strftime('%d ')}{MONTH_NAMES[end.month-1]}\n"
     reply += f"💰 Бюджет: {budget}₽ (~{daily_budget}₽ в день)\n\n"
+    
     if hotels:
         reply += "🏨 Предложенные отели:\n" + "\n".join([f"  • {h['name']} (~{h['price']}₽/день)" for h in hotels[:3]]) + "\n\n"
 
@@ -307,26 +313,77 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         w = weather.get(date_str, {"temp": "?", "main": "clear"})
         reply += generate_daily_plan(date_str, w, places, daily_budget, used_places) + "\n"
 
-    enriched = ask_mistral(f"Пользователь поедет в {city} с {start.strftime('%d %B')} по {end.strftime('%d %B')} с бюджетом {budget}₽. Придумай 3 популярных идеи для отдыха, связанных с местной культурой или природой. Формат: 1)... 2)... 3)... Только идеи. На РУССКОМ.")
+    enriched = await asyncio.to_thread(
+        ask_mistral,
+        f"Пользователь поедет в {city} с {start.strftime('%d ')}{MONTH_NAMES[start.month-1]} по {end.strftime('%d ')}{MONTH_NAMES[end.month-1]} с бюджетом {budget}₽. Придумай 3 популярных идеи для отдыха, связанных с местной культурой или природой. Формат: 1)... 2)... 3)... Только идеи. На РУССКОМ."
+    )
     reply += "🌟 Дополнительные рекомендации:\n" + enriched
+    
+    return reply
 
-    await planning_msg.edit_text(reply)
+# ========= TELEGRAM HANDLERS =========
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [[KeyboardButton("🚀 Начать")]]
-    markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
     await update.message.reply_text(
-        "Нажмите кнопку ниже, чтобы начать 👇",
+        "Добро пожаловать! Нажмите '🚀 Начать' для планирования поездки.",
         reply_markup=ReplyKeyboardMarkup([[KeyboardButton("🚀 Начать")]], resize_keyboard=True)
     )
-    # Добавляем кнопку "Сохранить в календарь"
-    keyboard = [[KeyboardButton("📅 Сохранить в календарь")]]
-    markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
-    await update.message.reply_text("Нажми ниже, чтобы сохранить поездку в календарь 📆", reply_markup=markup)
 
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    text = update.message.text
+    
+    if text == "🚀 Начать":
+        await update.message.reply_text(
+            "Введите параметры поездки в формате: Город, даты (например, 15-16 июня), бюджет",
+            reply_markup=ReplyKeyboardMarkup([[KeyboardButton("📅 Сохранить в календарь")]], resize_keyboard=True)
+        )
+        return
+
+    if text == "📅 Сохранить в календарь":
+        if not calendar_context:
+            await update.message.reply_text("Сначала создайте план поездки, введя параметры!")
+            return
+            
+        try:
+            auth_msg = await update.message.reply_text("🔐 Авторизуемся в Google Calendar...")
+            
+            # Сначала проверяем авторизацию
+            service = get_google_calendar_service(user_id)
+            
+            await auth_msg.edit_text("📅 Добавляем события в календарь...")
+            
+            for date_str, events in calendar_context.items():
+                date = datetime.strptime(date_str, "%Y-%m-%d")
+                for i, event_desc in enumerate(events):
+                    event_time = date + timedelta(hours=9 + i * 2)
+                    success = await add_event_to_google_calendar(user_id, event_desc, event_time)
+                    if not success:
+                        raise Exception("Ошибка добавления события")
+            
+            await auth_msg.edit_text("✅ Поездка успешно добавлена в ваш Google Календарь!")
+        except Exception as e:
+            await update.message.reply_text(f"⚠️ Ошибка: {str(e)}")
+        return
+
+    planning_msg = await update.message.reply_text("⏳ Планирую ваш отдых...")
+    
+    try:
+        # Очищаем предыдущий контекст перед созданием нового плана
+        calendar_context.clear()
+        
+        city, start, end, budget = parse_user_input(text)
+        if not all([city, start, end, budget]):
+            await planning_msg.edit_text("Не удалось распознать параметры поездки. Пример:\nМосква, 15-16 июня, 5000")
+            return
+
+        reply = await generate_trip_plan(city, start, end, budget)
+        await planning_msg.edit_text(reply)
+        
+    except Exception as e:
+        await planning_msg.edit_text(f"⚠️ Произошла ошибка: {str(e)}")
 
 def main():
-    init_google_calendar()
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
