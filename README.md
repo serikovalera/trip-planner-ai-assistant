@@ -108,3 +108,5 @@ https://t.me/GoTrip_planner_bot
 
 ![image](https://github.com/user-attachments/assets/2e532929-23e2-4c32-9de4-7d7fcba6a52c)
 
+Юзер телеграмм бота 
+@GoTrip_planner_bot
