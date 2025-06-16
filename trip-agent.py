@@ -30,8 +30,8 @@ CATEGORY_TRANSLATIONS = {
     "cafe": "Кафе", "restaurant": "Ресторан", "museum": "Музей",
     "park": "Парк", "art_gallery": "Галерея", "hotel": "Отель"
 }
-TELEGRAM_TOKEN = "7699600970:AAGbm13LNlKXG9bQe-q86SkNaJZCMgCrRLI"
-SCOPES = ['https://www.googleapis.com/auth/calendar.events']
+TELEGRAM_TOKEN = "токен"
+SCOPES = ['ссылка']
 CLIENT_SECRET_FILE = 'google_credentials.json'
 
 # ---   Глобальные переменные   ---
